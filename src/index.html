@@ -1,0 +1,37 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      html, body {
+        background: #111;
+        color: #ddd;
+      }
+    </style>
+    <title>WebSocket Test</title>
+  </head>
+  <body>
+    <h1>WebSocket Test</h1>
+    <div id="messages"></div>
+    <script>
+      console.log("Hello!");
+      const ws = new WebSocket('ws://localhost:8080/ws');
+      console.log("Created WebSocket", ws);
+
+      ws.onmessage = function(event) {
+        const messages = document.getElementById('messages');
+        const newMessage = document.createElement('p');
+        newMessage.textContent = event.data;
+        messages.appendChild(newMessage);
+      };
+
+      ws.onopen = function() {
+        console.log('WebSocket connection opened');
+      };
+
+      ws.onclose = function() {
+        console.log('WebSocket connection closed');
+      };
+    </script>
+  </body>
+</html>
