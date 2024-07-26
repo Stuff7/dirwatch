@@ -6,6 +6,7 @@ use std::{
 };
 
 pub enum Error {
+  InvalidRequest,
   Io(io::Error),
   Utf8(Utf8Error),
   Nul(NulError),
@@ -32,6 +33,7 @@ impl From<NulError> for Error {
 impl Display for Error {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
+      Self::InvalidRequest => write!(f, "Invalid HTTP Request"),
       Self::Io(err) => write!(f, "{err}"),
       Self::Utf8(err) => write!(f, "{err}"),
       Self::Nul(err) => write!(f, "{err}"),

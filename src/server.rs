@@ -23,7 +23,7 @@ impl TryFrom<&TcpStream> for HttpRequest {
     let request = str::from_utf8(&buffer)?;
 
     let mut lines = request.lines();
-    let mut method = lines.next().unwrap_or("Unknown Method").split_whitespace();
+    let mut method = lines.next().ok_or(Error::InvalidRequest)?.split_whitespace();
     let (method, path) = (method.next().unwrap_or("UNKNOWN"), method.next().unwrap_or("Unknown Path"));
     let user_agent = lines.find(|line| line.starts_with("User-Agent:")).unwrap_or("User-Agent: Unknown");
 
