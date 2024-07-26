@@ -1,36 +1,43 @@
-<!-- index.html -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE Test</title>
     <style>
-      html, body {
-        background: #111;
-        color: #ddd;
+      body {
+        font-family: Arial, sans-serif;
+      }
+
+      #events {
+        margin-top: 20px;
+      }
+
+      .event {
+        margin: 5px 0;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 5px;
       }
     </style>
-    <title>WebSocket Test</title>
   </head>
   <body>
-    <h1>WebSocket Test</h1>
-    <div id="messages"></div>
+    <h1>Server-Sent Events Test</h1>
+    <div id="events"></div>
+
     <script>
-      console.log("Hello!");
-      const ws = new WebSocket('ws://localhost:8080/ws');
-      console.log("Created WebSocket", ws);
+      const eventSource = new EventSource('/sse');
 
-      ws.onmessage = function(event) {
-        const messages = document.getElementById('messages');
-        const newMessage = document.createElement('p');
-        newMessage.textContent = event.data;
-        messages.appendChild(newMessage);
+      eventSource.onmessage = function(event) {
+        const eventsDiv = document.getElementById('events');
+        const newEvent = document.createElement('div');
+        newEvent.className = 'event';
+        newEvent.textContent = event.data;
+        eventsDiv.appendChild(newEvent);
       };
 
-      ws.onopen = function() {
-        console.log('WebSocket connection opened');
-      };
-
-      ws.onclose = function() {
-        console.log('WebSocket connection closed');
+      eventSource.onerror = function(event) {
+        console.error('EventSource failed:', event);
       };
     </script>
   </body>

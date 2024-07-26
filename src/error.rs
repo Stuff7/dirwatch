@@ -6,8 +6,6 @@ use std::{
 };
 
 pub enum Error {
-  MissingArg(&'static str),
-  InvalidArg(&'static str),
   Io(io::Error),
   Utf8(Utf8Error),
   Nul(NulError),
@@ -34,8 +32,6 @@ impl From<NulError> for Error {
 impl Display for Error {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Self::MissingArg(arg) => write!(f, "Missing {arg}"),
-      Self::InvalidArg(arg) => write!(f, "Invalid {arg}"),
       Self::Io(err) => write!(f, "{err}"),
       Self::Utf8(err) => write!(f, "{err}"),
       Self::Nul(err) => write!(f, "{err}"),

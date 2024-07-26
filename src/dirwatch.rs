@@ -6,7 +6,7 @@ use std::{io, thread, time};
 pub use libc::{IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_MODIFY};
 
 use crate::error::Error;
-use crate::ws;
+use crate::server;
 
 const EVENT_SIZE: usize = std::mem::size_of::<inotify_event>();
 const BUF_LEN: usize = 1024 * (EVENT_SIZE + 16);
@@ -26,12 +26,17 @@ pub fn watch_dir(path: &str, mask: u32, tx: &mut TcpStream) -> Result<(), Error>
   }
 
   let mut buffer = [0; BUF_LEN];
+  tx.set_nonblocking(true)?;
 
   loop {
     let length = unsafe { read(fd, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len()) };
     if length < 0 {
       let err = io::Error::last_os_error();
       if err.raw_os_error() == Some(EAGAIN) || err.raw_os_error() == Some(EWOULDBLOCK) {
+        if server::is_stream_closed(tx) {
+          return Ok(());
+        }
+
         thread::sleep(time::Duration::from_millis(10));
         continue;
       }
@@ -43,7 +48,7 @@ pub fn watch_dir(path: &str, mask: u32, tx: &mut TcpStream) -> Result<(), Error>
     let mut i = 0;
     while i < length as usize {
       let event = unsafe { &*(buffer.as_ptr().add(i) as *const inotify_event) };
-      ws::send_websocket_message(tx, "File changed")?;
+      server::send_sse_message(tx, "File changed")?;
       print_event(event, &buffer);
       i += EVENT_SIZE + event.len as usize;
     }
