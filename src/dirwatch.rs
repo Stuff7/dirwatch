@@ -1,6 +1,7 @@
 use libc::{inotify_add_watch, inotify_event, inotify_init1, read, EAGAIN, EWOULDBLOCK, IN_CLOSE_WRITE};
 use std::ffi::{CStr, CString};
 use std::net::TcpStream;
+use std::path::Path;
 use std::{io, thread, time};
 
 pub use libc::{IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_MODIFY};
@@ -11,14 +12,14 @@ use crate::server;
 const EVENT_SIZE: usize = std::mem::size_of::<inotify_event>();
 const BUF_LEN: usize = 1024 * (EVENT_SIZE + 16);
 
-pub fn watch_dir(path: &str, mask: u32, tx: &mut TcpStream) -> Result<(), Error> {
+pub fn watch_dir(path: &Path, mask: u32, tx: &mut TcpStream) -> Result<(), Error> {
   let fd = unsafe { inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
   if fd < 0 {
     let err = io::Error::last_os_error();
     return Err(io::Error::new(err.kind(), format!("Failed to initialize inotify: {}", err)).into());
   }
 
-  let path_c = CString::new(path)?;
+  let path_c = CString::new(path.to_str().unwrap().as_bytes())?;
   let wd = unsafe { inotify_add_watch(fd, path_c.as_ptr(), mask) };
   if wd < 0 {
     let err = io::Error::last_os_error();
