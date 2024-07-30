@@ -3,6 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::{str, thread};
 
+use crate::http::HttpMethod;
 use crate::{
   dirwatch,
   error::Error,
@@ -17,17 +18,17 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, dir_watch: &Path) -> Res
     addr = req.peer_addr;
 
     println!(
-      "[\x1b[93m{}\x1b[0m] HTTP \x1b[34m{}\x1b[0m \x1b[33m{}\x1b[0m - \x1b[36m{:?}\x1b[0m | {:?}",
+      "[\x1b[93m{}\x1b[0m] \x1b[34m{:?}\x1b[0m \x1b[33m{}\x1b[0m - \x1b[36m{}\x1b[0m | {}",
       req.peer_addr,
       req.method,
       req.path,
-      req.headers.get("user-agent"),
-      req.headers.get("connection"),
+      req.headers.get("user-agent").unwrap_or(&"No user agent".into()),
+      req.headers.get("connection").unwrap_or(&"".into()),
     );
 
     let mut response = HttpResponse::not_found();
 
-    if &*req.method == "GET" {
+    if matches!(req.method, HttpMethod::Get) {
       response.status = 200;
       match &*req.path {
         "/" => response.read_file_to_end(dir_serve.join("index.html"))?,

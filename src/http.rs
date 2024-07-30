@@ -12,7 +12,7 @@ use crate::error::Error;
 
 #[derive(Debug)]
 pub struct HttpRequest {
-  pub method: Box<str>,
+  pub method: HttpMethod,
   pub path: Box<str>,
   pub peer_addr: SocketAddr,
   pub headers: HttpHeaders,
@@ -148,6 +148,37 @@ impl Display for HttpResponse {
       write!(f, "content-length: {}\r\n", self.contents.len())?;
     }
     write!(f, "\r\n")
+  }
+}
+
+#[derive(Debug)]
+pub enum HttpMethod {
+  Get,
+  Post,
+  Put,
+  Delete,
+  Patch,
+  Options,
+  Head,
+  Trace,
+  Connect,
+  Unknown,
+}
+
+impl From<&str> for HttpMethod {
+  fn from(value: &str) -> Self {
+    match value.to_uppercase().as_str() {
+      "GET" => Self::Get,
+      "POST" => Self::Post,
+      "PUT" => Self::Put,
+      "DELETE" => Self::Delete,
+      "PATCH" => Self::Patch,
+      "OPTIONS" => Self::Options,
+      "HEAD" => Self::Head,
+      "TRACE" => Self::Trace,
+      "CONNECT" => Self::Connect,
+      _ => Self::Unknown,
+    }
   }
 }
 
