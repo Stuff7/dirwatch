@@ -27,7 +27,7 @@ impl TryFrom<&mut TcpStream> for HttpRequest {
 
     let mut lines = request.lines();
     let mut method = lines.next().ok_or(Error::EmptyRequest)?.split_whitespace();
-    let (method, path) = (method.next().unwrap_or("UNKNOWN"), method.next().unwrap_or("Unknown Path"));
+    let (method, path) = (method.next().unwrap_or_default(), method.next().unwrap_or("???"));
 
     let mut request = Self {
       method: method.into(),
@@ -41,7 +41,8 @@ impl TryFrom<&mut TcpStream> for HttpRequest {
       else {
         break;
       };
-      request.headers.insert(k.to_ascii_lowercase().into(), v[1..].to_string().into());
+
+      request.headers.set(k.to_ascii_lowercase(), v[1..].to_string());
     }
 
     Ok(request)
@@ -78,26 +79,42 @@ pub struct HttpResponse {
 }
 
 impl HttpResponse {
-  pub fn from_status(status: usize) -> Self {
+  pub fn new() -> Self {
     Self {
-      status,
+      status: 200,
       headers: HttpHeaders(HashMap::new()),
       contents: Vec::new(),
     }
   }
 
-  pub fn not_found() -> Self {
-    let mut res = Self::from_status(404);
-    res.write_str(b"404 Not Found");
-    res
+  pub fn set_404(&mut self) -> &mut Self {
+    self
+      .set_status(404)
+      .set_content(b"404 Not Found")
+      .set_header("content-type", "text/plain");
+    self
   }
 
-  pub fn read_file_to_end<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
+  pub fn set_status(&mut self, status: usize) -> &mut Self {
+    self.status = status;
+    self
+  }
+
+  pub fn set_content(&mut self, content: &[u8]) -> &mut Self {
+    self.contents.extend_from_slice(content);
+    self
+  }
+
+  pub fn set_header<T: Into<Cow<'static, str>>>(&mut self, k: T, v: T) -> &mut Self {
+    self.headers.set(k, v);
+    self
+  }
+
+  pub fn set_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
     self.contents.clear();
     let Ok(mut file) = File::open(&path)
     else {
-      self.write_str(b"404 Not Found");
-      self.status = 404;
+      self.set_404();
       return Ok(());
     };
 
@@ -112,7 +129,7 @@ impl HttpResponse {
       _ => "application/octet-stream",
     };
 
-    self.headers.insert("content-type".into(), mime_type.into());
+    self.set_header("content-type", mime_type);
 
     Ok(())
   }
@@ -125,11 +142,6 @@ impl HttpResponse {
     stream.flush()?;
 
     Ok(())
-  }
-
-  fn write_str(&mut self, content: &[u8]) {
-    self.contents.extend_from_slice(content);
-    self.headers.insert("content-type".into(), "text/plain".into());
   }
 
   fn status_text(&self) -> &str {
@@ -184,6 +196,13 @@ impl From<&str> for HttpMethod {
 
 #[derive(Debug)]
 pub struct HttpHeaders(HashMap<Cow<'static, str>, Cow<'static, str>>);
+
+impl HttpHeaders {
+  pub fn set<T: Into<Cow<'static, str>>>(&mut self, k: T, v: T) -> &mut Self {
+    self.insert(k.into(), v.into());
+    self
+  }
+}
 
 impl Deref for HttpHeaders {
   type Target = HashMap<Cow<'static, str>, Cow<'static, str>>;
