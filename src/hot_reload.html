@@ -1,7 +1,9 @@
 <script defer data-hot-reload>
+{
   const eventSource = new EventSource("/sse");
   eventSource.onmessage = function(event) {
-    document.getElementById("events").innerHTML += `<div class="event">${event.data}</div>`
+    // document.getElementById("events").innerHTML += `<div class="event">${event.data}</div>`
+    location.reload();
   };
   eventSource.onerror = function(event) {
     console.log("EventSource failed");
@@ -9,4 +11,5 @@
   window.addEventListener("beforeunload", () => {
     eventSource.close();
   });
+}
 </script>

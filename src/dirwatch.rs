@@ -1,5 +1,6 @@
 use crate::channels::BroadcastSender;
 use crate::error::Error;
+use crate::server;
 use libc::{inotify_add_watch, inotify_event, inotify_init1, read, EAGAIN, EWOULDBLOCK, IN_CLOSE_WRITE};
 use std::ffi::{CStr, CString};
 use std::path::Path;
@@ -10,7 +11,7 @@ pub use libc::{IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_MODIFY};
 const EVENT_SIZE: usize = std::mem::size_of::<inotify_event>();
 const BUF_LEN: usize = 1024 * (EVENT_SIZE + 16);
 
-pub fn watch_dir(path: &Path, mask: u32, mut tx: BroadcastSender<bool>) -> Result<(), Error> {
+pub fn watch_dir(path: &Path, mask: u32, mut tx: BroadcastSender<server::Event>) -> Result<(), Error> {
   let fd = unsafe { inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
   if fd < 0 {
     let err = io::Error::last_os_error();
@@ -42,8 +43,8 @@ pub fn watch_dir(path: &Path, mask: u32, mut tx: BroadcastSender<bool>) -> Resul
     let mut i = 0;
     while i < length as usize {
       let event = unsafe { &*(buffer.as_ptr().add(i) as *const inotify_event) };
-      tx.send(true);
       log_event(event, &buffer);
+      tx.send(server::Event::FileChange);
       i += EVENT_SIZE + event.len as usize;
     }
   }
@@ -82,5 +83,5 @@ fn log_event(event: &inotify_event, buffer: &[u8]) {
     ""
   };
 
-  println!("WD: {}, Mask: {}, Name: {}", wd, mask_str.trim(), name);
+  println!("\x1b[38;5;123mFile Change:\x1b[0m WD: {}, Mask: {}, Name: {}", wd, mask_str.trim(), name);
 }

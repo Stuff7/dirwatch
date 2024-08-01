@@ -1,87 +1,96 @@
 use std::{
-  sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError},
-  time::Duration,
+  fmt::Debug,
+  sync::{Arc, Condvar, Mutex, MutexGuard},
+  thread,
+  time::{Duration, Instant},
 };
 
 /// # Usage
 /// ```rust
-/// let (tx, rx) = broadcast(0, Duration::from_millis(10));
+/// use std::thread;
+/// let (tx, rx) = broadcast((0, 0));
 ///
-/// let sender = {
+/// let senders: [thread::JoinHandle<()>; 3] = std::array::from_fn(|n| {
 ///   let mut tx = tx.clone();
 ///   thread::spawn(move || {
 ///     for i in 0..5 {
-///       tx.send(i);
-///       thread::sleep(Duration::from_millis(20));
+///       tx.send((n, i));
 ///     }
 ///   })
-/// };
+/// });
 ///
 /// let receivers: [thread::JoinHandle<()>; 3] = std::array::from_fn(|i| {
 ///   let rx = rx.clone();
+///   let timeout = Duration::from_millis(1);
 ///   thread::spawn(move || {
 ///     let mut n = rx.lock();
 ///     let mut waiting = false;
+///     let mut received = 0;
 ///     loop {
-///       if waiting {
-///         println!("Recv #{i}: Waiting...");
+///       if !waiting {
+///         received += 1;
+///         println!("Recv #{i}: n={n:?}");
 ///       }
-///       else {
-///         println!("Recv #{i}: n={n}");
-///       }
-///       if *n == 4 {
+///
+///       if received == 15 {
 ///         return;
 ///       }
-///       (n, waiting) = rx.recv(n);
+///
+///       (n, waiting) = rx.recv_with_timeout(n, timeout);
 ///     }
 ///   })
 /// });
 /// ```
-pub fn broadcast<T>(data: T, timeout: Duration) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
+pub fn broadcast<T>(data: T) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
   let tx = BroadcastSender {
     pair: Arc::new((Mutex::new(data), Condvar::new())),
+    timeout: Arc::new(Mutex::new(Instant::now() - SEND_COOLDOWN)),
   };
 
-  let rx = BroadcastReceiver {
-    pair: tx.pair.clone(),
-    timeout,
-  };
+  let rx = BroadcastReceiver { pair: tx.pair.clone() };
 
   (tx, rx)
 }
 
 pub struct BroadcastSender<T> {
   pair: Arc<(Mutex<T>, Condvar)>,
+  timeout: Arc<Mutex<Instant>>,
 }
 
-impl<T> BroadcastSender<T> {
+const SEND_COOLDOWN: Duration = Duration::from_millis(5);
+impl<T: Debug> BroadcastSender<T> {
   pub fn send(&mut self, data: T) {
     let (lock, cvar) = &*self.pair;
 
-    let mut n = match lock.try_lock() {
-      Ok(n) => n,
-      Err(e) => {
-        if matches!(e, TryLockError::WouldBlock) {
-          return;
-        }
-        panic!("Poisoned lock {e}");
+    loop {
+      let mut timeout = self.timeout.lock().unwrap();
+      if timeout.elapsed() < SEND_COOLDOWN {
+        thread::sleep(SEND_COOLDOWN - timeout.elapsed());
+        continue;
       }
-    };
 
-    *n = data;
-    cvar.notify_all();
+      *timeout = Instant::now();
+      drop(timeout);
+
+      *lock.lock().unwrap() = data;
+
+      cvar.notify_all();
+      return;
+    }
   }
 }
 
 impl<T> Clone for BroadcastSender<T> {
   fn clone(&self) -> Self {
-    Self { pair: self.pair.clone() }
+    Self {
+      pair: self.pair.clone(),
+      timeout: self.timeout.clone(),
+    }
   }
 }
 
 pub struct BroadcastReceiver<T> {
   pair: Arc<(Mutex<T>, Condvar)>,
-  timeout: Duration,
 }
 
 impl<T> BroadcastReceiver<T> {
@@ -92,16 +101,19 @@ impl<T> BroadcastReceiver<T> {
 
   pub fn recv<'a>(&'a self, guard: MutexGuard<'a, T>) -> (MutexGuard<'a, T>, bool) {
     let (_, cvar) = &*self.pair;
-    let t = cvar.wait_timeout(guard, self.timeout).unwrap();
+    let t = cvar.wait_timeout(guard, Duration::ZERO).unwrap();
+    (t.0, t.1.timed_out())
+  }
+
+  pub fn recv_with_timeout<'a>(&'a self, guard: MutexGuard<'a, T>, timeout: Duration) -> (MutexGuard<'a, T>, bool) {
+    let (_, cvar) = &*self.pair;
+    let t = cvar.wait_timeout(guard, timeout).unwrap();
     (t.0, t.1.timed_out())
   }
 }
 
 impl<T> Clone for BroadcastReceiver<T> {
   fn clone(&self) -> Self {
-    Self {
-      pair: self.pair.clone(),
-      timeout: self.timeout,
-    }
+    Self { pair: self.pair.clone() }
   }
 }

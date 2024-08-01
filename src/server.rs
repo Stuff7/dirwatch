@@ -1,10 +1,5 @@
-use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::Path;
-use std::time::Duration;
-use std::{str, thread};
-
-use crate::channels::{self, BroadcastReceiver};
+use crate::channels::{self, BroadcastReceiver, BroadcastSender};
+use crate::cli::Cmd;
 use crate::http::HttpMethod;
 use crate::{
   dirwatch,
@@ -12,9 +7,21 @@ use crate::{
   http::{HttpRequest, HttpResponse},
   Cli,
 };
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
-fn inject_hr(res: &mut HttpResponse, path: &Path) -> Result<(), Error> {
-  res.set_file(path)?;
+#[derive(Debug)]
+pub enum Event {
+  Start,
+  FileChange,
+  CmdFinished,
+}
+
+fn inject_hr(req: &HttpRequest, res: &mut HttpResponse, path: &Path) -> Result<(), Error> {
+  res.set_file(path, req)?;
   const HEAD: &[u8] = b"<head>";
 
   let Some(idx) = res.contents.windows(HEAD.len()).position(|s| s == HEAD).map(|i| i + HEAD.len())
@@ -27,7 +34,7 @@ fn inject_hr(res: &mut HttpResponse, path: &Path) -> Result<(), Error> {
   Ok(())
 }
 
-fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<bool>) -> Result<(), Error> {
+fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<Event>) -> Result<(), Error> {
   let mut addr;
   loop {
     let req = HttpRequest::try_from(&mut stream)?;
@@ -45,10 +52,19 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<bo
     let mut res = HttpResponse::new();
 
     if matches!(req.method, HttpMethod::Get) {
-      match &*req.path {
-        "/" => inject_hr(&mut res, &dir_serve.join("index.html"))?,
-        "/sse" => return handle_sse(stream, req, rx),
-        _ => res.set_file(dir_serve.join(&req.path[1..]))?,
+      let path = dir_serve.join(&req.path[1..]);
+
+      if path.is_dir() {
+        if let Err(e) = inject_hr(&req, &mut res, &path.join("index.html")) {
+          eprintln!("{e}");
+          res.set_404();
+        }
+      }
+      else {
+        match &*req.path {
+          "/sse" => return handle_sse(stream, req, rx),
+          _ => res.set_file(dir_serve.join(&req.path[1..]), &req)?,
+        }
       }
     }
     else {
@@ -57,7 +73,7 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<bo
 
     res.write_to(&mut stream)?;
 
-    if res.status != 200 || !req.headers.get("connection").is_some_and(|v| v == "keep-alive") {
+    if !req.headers.get("connection").is_some_and(|v| v == "keep-alive") {
       break;
     }
   }
@@ -67,7 +83,7 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<bo
   Ok(())
 }
 
-fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<bool>) -> Result<(), Error> {
+fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<Event>) -> Result<(), Error> {
   println!("[\x1b[93m{}\x1b[0m] \x1b[36mSSE Connected\x1b[0m", req.peer_addr);
 
   let mut response = HttpResponse::new();
@@ -88,14 +104,33 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<boo
     }
 
     (guard, waiting) = rx.recv(guard);
-    if !waiting {
+    if !waiting && matches!(&*guard, Event::CmdFinished) {
       println!("[\x1b[93m{}\x1b[0m] \x1b[32mFile Changed\x1b[0m", req.peer_addr);
-      send_sse_message(&mut stream, "File changed")?;
+      send_sse_message(&mut stream)?;
+    }
+    else if !waiting {
+      println!("Event: {:?}", guard);
     }
   }
 
   println!("[\x1b[93m{}\x1b[0m] \x1b[33mSSE Disconnected\x1b[0m", req.peer_addr);
   Ok(())
+}
+
+fn run_cmd(mut cmd: Cmd, mut tx: BroadcastSender<Event>, rx: BroadcastReceiver<Event>) -> Result<(), Error> {
+  let mut guard = rx.lock();
+  let mut waiting;
+  let timeout = Duration::from_millis(100);
+
+  loop {
+    (guard, waiting) = rx.recv_with_timeout(guard, timeout);
+    if !waiting && matches!(&*guard, Event::FileChange) {
+      drop(guard);
+      cmd.run_wait()?;
+      tx.send(Event::CmdFinished);
+      guard = rx.lock();
+    }
+  }
 }
 
 pub fn run_server(cli: &Cli) -> Result<(), Error> {
@@ -116,14 +151,27 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
     cli.dir_serve,
   );
 
-  let (tx, rx) = channels::broadcast(false, Duration::from_millis(0));
+  let (tx, rx) = channels::broadcast(Event::Start);
 
   {
     let dir_watch = cli.dir_watch.clone();
     let tx = tx.clone();
+
     thread::spawn(move || {
       if let Err(e) = dirwatch::watch_dir(&dir_watch, dirwatch::IN_MODIFY, tx) {
-        eprintln!("Error watching directory: {e}");
+        eprintln!("\x1b[38;5;210mError watching directory:\x1b[0m {e}");
+      }
+    });
+  }
+
+  {
+    let cmd = Cmd::new(&cli.cmd);
+    let tx = tx.clone();
+    let rx = rx.clone();
+
+    thread::spawn(move || {
+      if let Err(e) = run_cmd(cmd, tx, rx) {
+        eprintln!("\x1b[38;5;210mCommand execution failed:\x1b[0m {e}");
       }
     });
   }
@@ -148,9 +196,8 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
   Ok(())
 }
 
-pub fn send_sse_message(stream: &mut TcpStream, message: &str) -> Result<(), Error> {
-  let response = format!("data: {}\n\n", message);
-  stream.write_all(response.as_bytes())?;
+pub fn send_sse_message(stream: &mut TcpStream) -> Result<(), Error> {
+  stream.write_all(b"data: File changed\n\n")?;
   stream.flush()?;
   Ok(())
 }

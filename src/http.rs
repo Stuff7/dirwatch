@@ -2,9 +2,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Range};
 use std::path::Path;
 use std::str;
 
@@ -16,6 +16,24 @@ pub struct HttpRequest {
   pub path: Box<str>,
   pub peer_addr: SocketAddr,
   pub headers: HttpHeaders,
+}
+
+impl HttpRequest {
+  pub fn get_range(&self) -> Option<Range<usize>> {
+    self.headers.get("range").and_then(|r| {
+      let (kw, r) = r.split_once('=')?;
+
+      if kw != "bytes" {
+        return None;
+      }
+
+      let (s, e) = r.split_once('-')?;
+      let s: usize = s.parse().ok()?;
+      let e: usize = e.parse().unwrap_or(0);
+
+      Some(s..e)
+    })
+  }
 }
 
 impl TryFrom<&mut TcpStream> for HttpRequest {
@@ -105,31 +123,51 @@ impl HttpResponse {
     self
   }
 
-  pub fn set_header<T: Into<Cow<'static, str>>>(&mut self, k: T, v: T) -> &mut Self {
+  pub fn set_header<K: Into<Cow<'static, str>>, V: Into<Cow<'static, str>>>(&mut self, k: K, v: V) -> &mut Self {
     self.headers.set(k, v);
     self
   }
 
-  pub fn set_file<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
+  pub fn set_file<P: AsRef<Path>>(&mut self, path: P, req: &HttpRequest) -> Result<(), Error> {
     self.contents.clear();
+
     let Ok(mut file) = File::open(&path)
     else {
       self.set_404();
       return Ok(());
     };
 
-    file.read_to_end(&mut self.contents)?;
+    /// 10 MB
+    const MAX_CONTENT_LEN: usize = 10 * 1000 * 1000;
 
-    let mime_type = match path.as_ref().extension().and_then(|ext| ext.to_str()) {
-      Some("html") => "text/html",
-      Some("css") => "text/css",
-      Some("js") => "application/javascript",
-      Some("png") => "image/png",
-      Some("ico") => "image/x-icon",
-      _ => "application/octet-stream",
-    };
+    let meta = file.metadata()?;
+    let file_size = meta.len() as usize;
+    let content_type = get_mime_type(path.as_ref());
+    self.set_header("content-type", content_type);
 
-    self.set_header("content-type", mime_type);
+    let (is_range_in_req, start, end) = req
+      .get_range()
+      .map(|r| {
+        let end = if r.end == 0 { file_size } else { r.end };
+        (true, r.start, end)
+      })
+      .unwrap_or((false, 0, file_size));
+
+    if !content_type.contains("image") && (is_range_in_req || file_size > MAX_CONTENT_LEN) {
+      let end = end.min(start + MAX_CONTENT_LEN);
+
+      file.seek(SeekFrom::Start(start as u64))?;
+      self.contents.resize(end - start, 0);
+      file.read_exact(&mut self.contents)?;
+
+      self
+        .set_status(206)
+        .set_header("accept-ranges", "bytes")
+        .set_header("content-range", format!("bytes {}-{}/{}", start, end - 1, file_size));
+    }
+    else {
+      file.read_to_end(&mut self.contents)?;
+    }
 
     Ok(())
   }
@@ -146,10 +184,40 @@ impl HttpResponse {
 
   fn status_text(&self) -> &str {
     match self.status {
-      200 => "OK",
-      404 => "NOT FOUND",
+      200 => "Ok",
+      206 => "Partial Content",
+      404 => "Not Found",
       s => todo!("Http status text for {s}"),
     }
+  }
+}
+
+fn get_mime_type(path: &std::path::Path) -> &'static str {
+  let Some(ext) = path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase())
+  else {
+    return "application/octet-stream";
+  };
+
+  match ext.as_str() {
+    "html" => "text/html",
+    "css" => "text/css",
+    "js" => "application/javascript",
+    "json" => "application/json",
+    "png" => "image/png",
+    "jpg" | "jpeg" => "image/jpeg",
+    "gif" => "image/gif",
+    "svg" => "image/svg+xml",
+    "ico" => "image/x-icon",
+    "xml" => "application/xml",
+    "pdf" => "application/pdf",
+    "zip" => "application/zip",
+    "mp4" => "video/mp4",
+    "mov" => "video/quicktime",
+    "mp3" => "audio/mpeg",
+    "wav" => "audio/wav",
+    "ogg" => "audio/ogg",
+    "webp" => "image/webp",
+    _ => "application/octet-stream",
   }
 }
 
@@ -198,7 +266,11 @@ impl From<&str> for HttpMethod {
 pub struct HttpHeaders(HashMap<Cow<'static, str>, Cow<'static, str>>);
 
 impl HttpHeaders {
-  pub fn set<T: Into<Cow<'static, str>>>(&mut self, k: T, v: T) -> &mut Self {
+  pub fn get<K: Into<Cow<'static, str>>>(&self, k: K) -> Option<&Cow<'static, str>> {
+    self.0.get(&k.into())
+  }
+
+  pub fn set<K: Into<Cow<'static, str>>, V: Into<Cow<'static, str>>>(&mut self, k: K, v: V) -> &mut Self {
     self.insert(k.into(), v.into());
     self
   }
