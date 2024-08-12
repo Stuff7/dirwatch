@@ -16,5 +16,5 @@ fn main() -> Result<(), Error> {
 
 #[cfg(not(unix))]
 fn main() {
-  panic!("Only Unix systems are supported")
+  println!("Only Unix systems are supported")
 }

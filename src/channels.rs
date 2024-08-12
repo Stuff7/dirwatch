@@ -1,119 +1,246 @@
-use std::{
-  fmt::Debug,
-  sync::{Arc, Condvar, Mutex, MutexGuard},
-  thread,
-  time::{Duration, Instant},
+use std::sync::{
+  atomic::{AtomicUsize, Ordering},
+  Arc, Condvar, Mutex, MutexGuard,
 };
 
-/// # Usage
+/// # Example
+///
 /// ```rust
-/// use std::thread;
-/// let (tx, rx) = broadcast((0, 0));
+/// #[derive(Debug)]
+/// enum Signal {
+///   Hello,
+///   Number(usize),
+///   Goodbye,
+/// }
 ///
-/// let senders: [thread::JoinHandle<()>; 3] = std::array::from_fn(|n| {
-///   let mut tx = tx.clone();
-///   thread::spawn(move || {
-///     for i in 0..5 {
-///       tx.send((n, i));
-///     }
-///   })
-/// });
+/// let (tx, rx) = channels::broadcast(Signal::Hello);
 ///
-/// let receivers: [thread::JoinHandle<()>; 3] = std::array::from_fn(|i| {
+/// let rx_handles: [JoinHandle<()>; 3] = std::array::from_fn(|i| {
 ///   let rx = rx.clone();
-///   let timeout = Duration::from_millis(1);
+///
 ///   thread::spawn(move || {
-///     let mut n = rx.lock();
-///     let mut waiting = false;
-///     let mut received = 0;
+///     let mut v = rx.lock();
+///
 ///     loop {
-///       if !waiting {
-///         received += 1;
-///         println!("Recv #{i}: n={n:?}");
-///       }
+///       v = rx.recv(v);
 ///
-///       if received == 15 {
-///         return;
+///       if matches!(*v, Signal::Goodbye) {
+///         break;
 ///       }
-///
-///       (n, waiting) = rx.recv_with_timeout(n, timeout);
 ///     }
 ///   })
 /// });
+///
+/// let tx_handles: [JoinHandle<()>; 3] = std::array::from_fn(|n| {
+///   let tx = tx.clone();
+///
+///   thread::spawn(move || {
+///     let n = n * 5;
+///
+///     for i in n..n + 5 {
+///       // Since we're sending an event on every cpu cycle we need to give time for the receivers to start listening again.
+///       thread::sleep(Duration::from_millis(10));
+///       tx.send(Signal::Number(i));
+///     }
+///   })
+/// });
+///
+/// for txh in tx_handles {
+///   txh.join().unwrap();
+/// }
+///
+/// tx.send(Signal::Goodbye);
+///
+/// for rxh in rx_handles {
+///   rxh.join().unwrap();
+/// }
 /// ```
-pub fn broadcast<T>(data: T) -> (BroadcastSender<T>, BroadcastReceiver<T>) {
-  let tx = BroadcastSender {
-    pair: Arc::new((Mutex::new(data), Condvar::new())),
-    timeout: Arc::new(Mutex::new(Instant::now() - SEND_COOLDOWN)),
+pub fn broadcast<T>(v: T) -> (Sender<T>, Receiver<T>) {
+  let rx = Receiver {
+    state: State {
+      tx_pair: Arc::new((Mutex::new(v), Condvar::new())),
+      rx_pair: Arc::new((Mutex::new(0), Condvar::new())),
+      receiver_count: Arc::new(AtomicUsize::new(0)),
+    },
   };
 
-  let rx = BroadcastReceiver { pair: tx.pair.clone() };
-
-  (tx, rx)
+  (Sender { state: rx.state.clone() }, rx)
 }
 
-pub struct BroadcastSender<T> {
-  pair: Arc<(Mutex<T>, Condvar)>,
-  timeout: Arc<Mutex<Instant>>,
+#[derive(Debug, Default)]
+pub struct State<T> {
+  tx_pair: Arc<(Mutex<T>, Condvar)>,
+  rx_pair: Arc<(Mutex<usize>, Condvar)>,
+  receiver_count: Arc<AtomicUsize>,
 }
 
-const SEND_COOLDOWN: Duration = Duration::from_millis(5);
-impl<T: Debug> BroadcastSender<T> {
-  pub fn send(&mut self, data: T) {
-    let (lock, cvar) = &*self.pair;
-
-    loop {
-      let mut timeout = self.timeout.lock().unwrap();
-      if timeout.elapsed() < SEND_COOLDOWN {
-        thread::sleep(SEND_COOLDOWN - timeout.elapsed());
-        continue;
-      }
-
-      *timeout = Instant::now();
-      drop(timeout);
-
-      *lock.lock().unwrap() = data;
-
-      cvar.notify_all();
-      return;
-    }
-  }
-}
-
-impl<T> Clone for BroadcastSender<T> {
+impl<T> Clone for State<T> {
   fn clone(&self) -> Self {
     Self {
-      pair: self.pair.clone(),
-      timeout: self.timeout.clone(),
+      tx_pair: self.tx_pair.clone(),
+      rx_pair: self.rx_pair.clone(),
+      receiver_count: self.receiver_count.clone(),
     }
   }
 }
 
-pub struct BroadcastReceiver<T> {
-  pair: Arc<(Mutex<T>, Condvar)>,
+#[derive(Debug, Default)]
+pub struct Receiver<T> {
+  state: State<T>,
 }
 
-impl<T> BroadcastReceiver<T> {
-  pub fn lock(&self) -> MutexGuard<'_, T> {
-    let (g, _) = &*self.pair;
-    g.lock().unwrap()
-  }
-
-  pub fn recv<'a>(&'a self, guard: MutexGuard<'a, T>) -> (MutexGuard<'a, T>, bool) {
-    let (_, cvar) = &*self.pair;
-    let t = cvar.wait_timeout(guard, Duration::ZERO).unwrap();
-    (t.0, t.1.timed_out())
-  }
-
-  pub fn recv_with_timeout<'a>(&'a self, guard: MutexGuard<'a, T>, timeout: Duration) -> (MutexGuard<'a, T>, bool) {
-    let (_, cvar) = &*self.pair;
-    let t = cvar.wait_timeout(guard, timeout).unwrap();
-    (t.0, t.1.timed_out())
-  }
-}
-
-impl<T> Clone for BroadcastReceiver<T> {
+impl<T> Clone for Receiver<T> {
   fn clone(&self) -> Self {
-    Self { pair: self.pair.clone() }
+    Self { state: self.state.clone() }
+  }
+}
+
+impl<T> Receiver<T> {
+  pub fn lock(&self) -> MutexGuard<T> {
+    let (tx_v, _) = &*self.state.tx_pair;
+    tx_v.lock().unwrap()
+  }
+
+  pub fn recv<'a>(&'a self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    let (_, tx_cv) = &*self.state.tx_pair;
+    let (rx_v, rx_cv) = &*self.state.rx_pair;
+    self.state.receiver_count.fetch_add(1, Ordering::Relaxed);
+    let v = tx_cv.wait(guard).unwrap();
+    self.state.receiver_count.fetch_sub(1, Ordering::Relaxed);
+
+    let mut recvrs = rx_v.lock().unwrap();
+    if *recvrs > 0 {
+      *recvrs -= 1;
+    }
+    let recvrs = *recvrs;
+    if recvrs == 0 {
+      rx_cv.notify_one();
+    }
+
+    v
+  }
+}
+
+#[derive(Debug, Default)]
+pub struct Sender<T> {
+  state: State<T>,
+}
+
+impl<T> Clone for Sender<T> {
+  fn clone(&self) -> Self {
+    Self { state: self.state.clone() }
+  }
+}
+
+impl<T> Sender<T> {
+  pub fn send(&self, v: T) {
+    let (tx_v, tx_cv) = &*self.state.tx_pair;
+    let (rx_v, rx_cv) = &*self.state.rx_pair;
+
+    let mut recvrs = rx_v.lock().unwrap();
+    while *recvrs != 0 {
+      recvrs = rx_cv.wait(recvrs).unwrap();
+    }
+    *recvrs = self.state.receiver_count.load(Ordering::Acquire);
+    drop(recvrs);
+
+    *tx_v.lock().unwrap() = v;
+    tx_cv.notify_all();
+  }
+
+  /// # Transceivers
+  ///
+  /// Transceivers are useful when you need to both receive and send in the same thread.
+  ///
+  /// # Example
+  ///
+  /// ```rust
+  ///  let (tx, rx) = channels::broadcast(Event::Start);
+  ///
+  ///  let rx_handles: [JoinHandle<()>; 3] = std::array::from_fn(|i| {
+  ///    let rx = rx.clone();
+  ///
+  ///    thread::spawn(move || {
+  ///      let mut v = rx.lock();
+  ///
+  ///      loop {
+  ///        v = rx.recv(v);
+  ///        match *v {
+  ///          Event::CmdFinished => println!("[RX][recvr{i:02}]: Command finished {:?}", *v),
+  ///          Event::Goodbye => break,
+  ///          _ => println!("[RX][recvr{i:02}]: Received {:?}", *v),
+  ///        }
+  ///      }
+  ///    })
+  ///  });
+  ///
+  ///  let runner = {
+  ///    let tx = tx.transceiver();
+  ///
+  ///    thread::spawn(move || {
+  ///      let mut event = tx.lock();
+  ///
+  ///      loop {
+  ///        event = tx.recv(event);
+  ///
+  ///        match *event {
+  ///          Event::FileChanged => event = tx.send(event, Event::CmdFinished),
+  ///          Event::Goodbye => break,
+  ///          _ => println!("[RX][runner ]: Received {:?}", *event),
+  ///        }
+  ///      }
+  ///    })
+  ///  };
+  ///
+  ///  let watcher = {
+  ///    let tx = tx.clone();
+  ///
+  ///    thread::spawn(move || {
+  ///      for _ in 0..5 {
+  ///        // Since we're sending an event on every cpu cycle we need to give time for the receivers to start listening again.
+  ///        thread::sleep(Duration::from_millis(10));
+  ///        tx.send(Event::FileChanged);
+  ///      }
+  ///    })
+  ///  };
+  ///
+  ///  watcher.join().unwrap();
+  ///
+  ///  thread::sleep(Duration::from_millis(10));
+  ///  tx.send(Event::Goodbye);
+  ///
+  ///  for rxh in rx_handles {
+  ///    rxh.join().unwrap();
+  ///  }
+  ///
+  ///  runner.join().unwrap();
+  /// ```
+  pub fn transceiver(&self) -> Transceiver<T> {
+    Transceiver {
+      rx: Receiver { state: self.state.clone() },
+      tx: self.clone(),
+    }
+  }
+}
+
+#[derive(Debug, Default)]
+pub struct Transceiver<T> {
+  rx: Receiver<T>,
+  tx: Sender<T>,
+}
+
+impl<T> Transceiver<T> {
+  pub fn lock(&self) -> MutexGuard<T> {
+    self.rx.lock()
+  }
+
+  pub fn recv<'a>(&'a self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+    self.rx.recv(guard)
+  }
+
+  pub fn send<'a>(&'a self, guard: MutexGuard<'a, T>, v: T) -> MutexGuard<'a, T> {
+    drop(guard);
+    self.tx.send(v);
+    self.lock()
   }
 }

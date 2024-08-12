@@ -1,4 +1,4 @@
-use crate::channels::{self, BroadcastReceiver, BroadcastSender};
+use crate::channels::{self, Receiver, Sender, Transceiver};
 use crate::cli::Cmd;
 use crate::http::HttpMethod;
 use crate::{
@@ -11,7 +11,6 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
 
 #[derive(Debug)]
 pub enum Event {
@@ -34,7 +33,7 @@ fn inject_hr(req: &HttpRequest, res: &mut HttpResponse, path: &Path) -> Result<(
   Ok(())
 }
 
-fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<Event>) -> Result<(), Error> {
+fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: Receiver<Event>) -> Result<(), Error> {
   let mut addr;
   loop {
     let req = HttpRequest::try_from(&mut stream)?;
@@ -83,7 +82,7 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: BroadcastReceiver<Ev
   Ok(())
 }
 
-fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<Event>) -> Result<(), Error> {
+fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: Receiver<Event>) -> Result<(), Error> {
   println!("[\x1b[93m{}\x1b[0m] \x1b[36mSSE Connected\x1b[0m", req.peer_addr);
 
   let mut response = HttpResponse::new();
@@ -95,7 +94,6 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<Eve
   response.write_to(&mut stream)?;
 
   let mut guard = rx.lock();
-  let mut waiting;
   stream.set_nonblocking(true)?;
 
   loop {
@@ -103,13 +101,10 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<Eve
       break;
     }
 
-    (guard, waiting) = rx.recv(guard);
-    if !waiting && matches!(&*guard, Event::CmdFinished) {
+    guard = rx.recv(guard);
+    if matches!(&*guard, Event::CmdFinished) {
       println!("[\x1b[93m{}\x1b[0m] \x1b[32mFile Changed\x1b[0m", req.peer_addr);
       send_sse_message(&mut stream)?;
-    }
-    else if !waiting {
-      println!("Event: {:?}", guard);
     }
   }
 
@@ -117,18 +112,14 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: BroadcastReceiver<Eve
   Ok(())
 }
 
-fn run_cmd(mut cmd: Cmd, mut tx: BroadcastSender<Event>, rx: BroadcastReceiver<Event>) -> Result<(), Error> {
-  let mut guard = rx.lock();
-  let mut waiting;
-  let timeout = Duration::from_millis(100);
+fn run_cmd(mut cmd: Cmd, tx: Transceiver<Event>) -> Result<(), Error> {
+  let mut event = tx.lock();
 
   loop {
-    (guard, waiting) = rx.recv_with_timeout(guard, timeout);
-    if !waiting && matches!(&*guard, Event::FileChange) {
-      drop(guard);
+    event = tx.recv(event);
+    if matches!(&*event, Event::FileChange) {
       cmd.run_wait()?;
-      tx.send(Event::CmdFinished);
-      guard = rx.lock();
+      event = tx.send(event, Event::CmdFinished);
     }
   }
 }
@@ -166,11 +157,10 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
 
   {
     let cmd = Cmd::new(&cli.cmd);
-    let tx = tx.clone();
-    let rx = rx.clone();
+    let tx = tx.transceiver();
 
     thread::spawn(move || {
-      if let Err(e) = run_cmd(cmd, tx, rx) {
+      if let Err(e) = run_cmd(cmd, tx) {
         eprintln!("\x1b[38;5;210mCommand execution failed:\x1b[0m {e}");
       }
     });
