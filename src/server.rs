@@ -8,7 +8,7 @@ use crate::{
   Cli,
 };
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::thread;
 
@@ -17,7 +17,7 @@ pub enum Event {
   Start,
   FileChange,
   CmdFinished,
-  StreamClosed,
+  StreamClosed(SocketAddr),
 }
 
 fn inject_hr(req: &HttpRequest, res: &mut HttpResponse, path: &Path) -> Result<(), Error> {
@@ -97,10 +97,11 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: Receiver<Event>) -> R
   let stream_watcher = {
     let tx = Sender::from(&rx);
     let mut stream = stream.try_clone()?;
+    let ip = req.peer_addr;
 
     thread::spawn(move || loop {
       if is_stream_closed(&mut stream) {
-        tx.send(Event::StreamClosed);
+        tx.send(Event::StreamClosed(ip));
         break;
       }
     })
@@ -116,7 +117,9 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: Receiver<Event>) -> R
         println!("[\x1b[93m{}\x1b[0m] \x1b[32mFile Changed\x1b[0m", req.peer_addr);
         send_sse_message(&mut stream)?;
       }
-      Event::StreamClosed => break,
+      Event::StreamClosed(ip) if req.peer_addr == ip => {
+        break;
+      }
       _ => (),
     }
   }
