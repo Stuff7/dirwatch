@@ -17,6 +17,7 @@ pub enum Event {
   Start,
   FileChange,
   CmdFinished,
+  StreamClosed,
 }
 
 fn inject_hr(req: &HttpRequest, res: &mut HttpResponse, path: &Path) -> Result<(), Error> {
@@ -93,21 +94,34 @@ fn handle_sse(mut stream: TcpStream, req: HttpRequest, rx: Receiver<Event>) -> R
 
   response.write_to(&mut stream)?;
 
+  let stream_watcher = {
+    let tx = Sender::from(&rx);
+    let mut stream = stream.try_clone()?;
+
+    thread::spawn(move || loop {
+      if is_stream_closed(&mut stream) {
+        tx.send(Event::StreamClosed);
+        break;
+      }
+    })
+  };
+
   let mut guard = rx.lock();
-  stream.set_nonblocking(true)?;
 
   loop {
-    if is_stream_closed(&mut stream) {
-      break;
-    }
-
     guard = rx.recv(guard);
-    if matches!(&*guard, Event::CmdFinished) {
-      println!("[\x1b[93m{}\x1b[0m] \x1b[32mFile Changed\x1b[0m", req.peer_addr);
-      send_sse_message(&mut stream)?;
+
+    match *guard {
+      Event::CmdFinished => {
+        println!("[\x1b[93m{}\x1b[0m] \x1b[32mFile Changed\x1b[0m", req.peer_addr);
+        send_sse_message(&mut stream)?;
+      }
+      Event::StreamClosed => break,
+      _ => (),
     }
   }
 
+  stream_watcher.join().unwrap();
   println!("[\x1b[93m{}\x1b[0m] \x1b[33mSSE Disconnected\x1b[0m", req.peer_addr);
   Ok(())
 }

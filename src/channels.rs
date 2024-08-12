@@ -126,6 +126,12 @@ pub struct Sender<T> {
   state: State<T>,
 }
 
+impl<T> From<&Receiver<T>> for Sender<T> {
+  fn from(value: &Receiver<T>) -> Self {
+    Self { state: value.state.clone() }
+  }
+}
+
 impl<T> Clone for Sender<T> {
   fn clone(&self) -> Self {
     Self { state: self.state.clone() }
