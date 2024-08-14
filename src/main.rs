@@ -11,7 +11,10 @@ use error::Error;
 #[cfg(unix)]
 fn main() -> Result<(), Error> {
   let args = Cli::parse()?;
-  server::run_server(&args)
+  server::run_server(&args)?;
+  println!("Main exit");
+
+  Ok(())
 }
 
 #[cfg(not(unix))]

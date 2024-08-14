@@ -1,29 +1,44 @@
-use crate::channels::Sender;
+use crate::channels::{Receiver, Sender};
 use crate::error::Error;
-use crate::server;
+use crate::server::Event;
 use libc::{inotify_add_watch, inotify_event, inotify_init1, read, EAGAIN, EWOULDBLOCK, IN_CLOSE_WRITE};
 use std::ffi::{CStr, CString};
 use std::path::Path;
-use std::{io, thread, time};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{io, thread};
 
 pub use libc::{IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_MODIFY};
 
 const EVENT_SIZE: usize = std::mem::size_of::<inotify_event>();
 const BUF_LEN: usize = 1024 * (EVENT_SIZE + 16);
 
-pub fn watch_dir(path: &Path, mask: u32, tx: Sender<server::Event>) -> Result<(), Error> {
+pub fn watch_dir(path: &Path, mask: u32, tx: Sender<Event>) -> Result<(), Error> {
   let fd = unsafe { inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
   if fd < 0 {
-    let err = io::Error::last_os_error();
-    return Err(io::Error::new(err.kind(), format!("Failed to initialize inotify: {}", err)).into());
+    return Err(Error::InotifyInit(io::Error::last_os_error()));
   }
 
   let path_c = CString::new(path.to_str().unwrap().as_bytes())?;
   let wd = unsafe { inotify_add_watch(fd, path_c.as_ptr(), mask) };
   if wd < 0 {
-    let err = io::Error::last_os_error();
-    return Err(io::Error::new(err.kind(), format!("Failed to add inotify watch: {}", err)).into());
+    return Err(Error::InotifyWatch(io::Error::last_os_error()));
   }
+
+  let stop = Arc::new(AtomicBool::new(false));
+  let server_events = {
+    let rx = Receiver::from(&tx);
+    let stop = stop.clone();
+
+    thread::spawn(move || loop {
+      let event = rx.recv();
+      if matches!(event, Event::Quit) {
+        stop.store(true, Ordering::Release);
+        break;
+      }
+    })
+  };
 
   let mut buffer = [0; BUF_LEN];
 
@@ -31,23 +46,32 @@ pub fn watch_dir(path: &Path, mask: u32, tx: Sender<server::Event>) -> Result<()
     let length = unsafe { read(fd, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len()) };
     if length < 0 {
       let err = io::Error::last_os_error();
-      if err.raw_os_error() == Some(EAGAIN) || err.raw_os_error() == Some(EWOULDBLOCK) {
-        thread::sleep(time::Duration::from_millis(10));
+      let err_os = err.raw_os_error();
+
+      if err_os == Some(EAGAIN) || err_os == Some(EWOULDBLOCK) {
+        if stop.load(Ordering::Acquire) {
+          break;
+        }
+
+        thread::sleep(Duration::from_millis(10));
         continue;
       }
-      else {
-        return Err(io::Error::new(err.kind(), format!("Failed to read inotify events: {}", err)).into());
-      }
+
+      return Err(Error::InotifyRead(io::Error::last_os_error()));
     }
 
     let mut i = 0;
     while i < length as usize {
       let event = unsafe { &*(buffer.as_ptr().add(i) as *const inotify_event) };
       log_event(event, &buffer);
-      tx.send(server::Event::FileChange);
+      tx.send(Event::FileChange);
       i += EVENT_SIZE + event.len as usize;
     }
   }
+
+  server_events.join().unwrap();
+
+  Ok(())
 }
 
 fn log_event(event: &inotify_event, buffer: &[u8]) {

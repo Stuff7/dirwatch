@@ -1,252 +1,152 @@
-use std::sync::{
-  atomic::{AtomicUsize, Ordering},
-  Arc, Condvar, Mutex, MutexGuard,
-};
+use std::cell::{Cell, RefCell};
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{array, thread};
 
-/// # Example
-///
-/// ```rust
-/// #[derive(Debug)]
-/// enum Signal {
-///   Hello,
-///   Number(usize),
-///   Goodbye,
-/// }
-///
-/// let (tx, rx) = channels::broadcast(Signal::Hello);
-///
-/// let rx_handles: [JoinHandle<()>; 3] = std::array::from_fn(|i| {
-///   let rx = rx.clone();
-///
-///   thread::spawn(move || {
-///     let mut v = rx.lock();
-///
-///     loop {
-///       v = rx.recv(v);
-///
-///       if matches!(*v, Signal::Goodbye) {
-///         break;
-///       }
-///     }
-///   })
-/// });
-///
-/// let tx_handles: [JoinHandle<()>; 3] = std::array::from_fn(|n| {
-///   let tx = tx.clone();
-///
-///   thread::spawn(move || {
-///     let n = n * 5;
-///
-///     for i in n..n + 5 {
-///       // Since we're sending an event on every cpu cycle we need to give time for the receivers to start listening again.
-///       thread::sleep(Duration::from_millis(10));
-///       tx.send(Signal::Number(i));
-///     }
-///   })
-/// });
-///
-/// for txh in tx_handles {
-///   txh.join().unwrap();
-/// }
-///
-/// tx.send(Signal::Goodbye);
-///
-/// for rxh in rx_handles {
-///   rxh.join().unwrap();
-/// }
-/// ```
-pub fn broadcast<T>(v: T) -> (Sender<T>, Receiver<T>) {
-  let rx = Receiver {
-    state: State {
-      tx_pair: Arc::new((Mutex::new(v), Condvar::new())),
-      rx_pair: Arc::new((Mutex::new(0), Condvar::new())),
-      receiver_count: Arc::new(AtomicUsize::new(0)),
-    },
-  };
-
-  (Sender { state: rx.state.clone() }, rx)
+#[derive(Debug)]
+struct Slot<T> {
+  version: AtomicUsize,
+  message: RefCell<T>,
 }
 
-#[derive(Debug, Default)]
-pub struct State<T> {
-  tx_pair: Arc<(Mutex<T>, Condvar)>,
-  rx_pair: Arc<(Mutex<usize>, Condvar)>,
-  receiver_count: Arc<AtomicUsize>,
+unsafe impl<T> Sync for Slot<T> {}
+
+#[derive(Debug)]
+pub struct RingBuffer<T> {
+  buffer: Arc<[Slot<T>]>,
+  write_index: Arc<AtomicUsize>,
+  version: Arc<AtomicUsize>,
 }
 
-impl<T> Clone for State<T> {
+impl<T> Clone for RingBuffer<T> {
   fn clone(&self) -> Self {
     Self {
-      tx_pair: self.tx_pair.clone(),
-      rx_pair: self.rx_pair.clone(),
-      receiver_count: self.receiver_count.clone(),
+      buffer: self.buffer.clone(),
+      write_index: self.write_index.clone(),
+      version: self.version.clone(),
     }
   }
 }
 
-#[derive(Debug, Default)]
+impl<T: Copy> RingBuffer<T> {
+  pub fn new<const BUF_SIZE: usize>(value: T) -> Self {
+    Self {
+      buffer: Arc::new(array::from_fn::<_, BUF_SIZE, _>(|_| Slot {
+        version: AtomicUsize::new(0),
+        message: RefCell::new(value),
+      })),
+      write_index: Arc::new(AtomicUsize::new(0)),
+      version: Arc::new(AtomicUsize::new(1)),
+    }
+  }
+
+  pub fn channel<const BUF_SIZE: usize>(value: T) -> (Sender<T>, Receiver<T>) {
+    let rx = Receiver {
+      state: RingBuffer::new::<BUF_SIZE>(value),
+      last_version: Cell::new(0),
+    };
+
+    (Sender(rx.state.clone()), rx)
+  }
+
+  pub fn send(&self, new_message: T) {
+    let index = self.write_index.fetch_add(1, Ordering::AcqRel) % self.buffer.len();
+    let version = self.version.fetch_add(1, Ordering::AcqRel);
+
+    let slot = &self.buffer[index];
+    slot.message.replace(new_message);
+    slot.version.store(version, Ordering::Release);
+  }
+}
+
+#[derive(Debug)]
 pub struct Receiver<T> {
-  state: State<T>,
+  state: RingBuffer<T>,
+  last_version: Cell<usize>,
 }
 
 impl<T> Clone for Receiver<T> {
   fn clone(&self) -> Self {
-    Self { state: self.state.clone() }
+    Self {
+      state: self.state.clone(),
+      last_version: Cell::new(0),
+    }
   }
 }
 
-impl<T> Receiver<T> {
-  pub fn lock(&self) -> MutexGuard<T> {
-    let (tx_v, _) = &*self.state.tx_pair;
-    tx_v.lock().unwrap()
-  }
-
-  pub fn recv<'a>(&'a self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-    let (_, tx_cv) = &*self.state.tx_pair;
-    let (rx_v, rx_cv) = &*self.state.rx_pair;
-    self.state.receiver_count.fetch_add(1, Ordering::Relaxed);
-    let v = tx_cv.wait(guard).unwrap();
-    self.state.receiver_count.fetch_sub(1, Ordering::Relaxed);
-
-    let mut recvrs = rx_v.lock().unwrap();
-    if *recvrs > 0 {
-      *recvrs -= 1;
+impl<T> From<&Sender<T>> for Receiver<T> {
+  fn from(value: &Sender<T>) -> Self {
+    Self {
+      state: value.0.clone(),
+      last_version: Cell::new(0),
     }
-    let recvrs = *recvrs;
-    if recvrs == 0 {
-      rx_cv.notify_one();
-    }
-
-    v
   }
 }
 
-#[derive(Debug, Default)]
-pub struct Sender<T> {
-  state: State<T>,
+impl<T: Copy + std::fmt::Debug> Receiver<T> {
+  pub fn recv_some(&self) -> Option<T> {
+    let current_version = self.last_version.get() + 1;
+    for slot in self.state.buffer.iter() {
+      if slot.version.load(Ordering::Acquire) == current_version {
+        self.last_version.replace(current_version);
+        return Some(*slot.message.borrow());
+      }
+    }
+
+    let next_closest = self
+      .state
+      .buffer
+      .iter()
+      .filter(|slot| slot.version.load(Ordering::Acquire) > current_version)
+      .min_by_key(|slot| slot.version.load(Ordering::Acquire));
+
+    if let Some(slot) = next_closest {
+      self.last_version.replace(slot.version.load(Ordering::Acquire));
+      return Some(*slot.message.borrow());
+    }
+
+    None
+  }
+
+  pub fn recv(&self) -> T {
+    loop {
+      if let Some(message) = self.recv_some() {
+        return message;
+      }
+      thread::sleep(Duration::from_millis(1));
+    }
+  }
+}
+
+impl<T> Deref for Receiver<T> {
+  type Target = RingBuffer<T>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.state
+  }
+}
+
+#[derive(Debug)]
+pub struct Sender<T>(RingBuffer<T>);
+
+impl<T> Clone for Sender<T> {
+  fn clone(&self) -> Self {
+    Self(self.0.clone())
+  }
+}
+
+impl<T> Deref for Sender<T> {
+  type Target = RingBuffer<T>;
+
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
 }
 
 impl<T> From<&Receiver<T>> for Sender<T> {
   fn from(value: &Receiver<T>) -> Self {
-    Self { state: value.state.clone() }
-  }
-}
-
-impl<T> Clone for Sender<T> {
-  fn clone(&self) -> Self {
-    Self { state: self.state.clone() }
-  }
-}
-
-impl<T> Sender<T> {
-  pub fn send(&self, v: T) {
-    let (tx_v, tx_cv) = &*self.state.tx_pair;
-    let (rx_v, rx_cv) = &*self.state.rx_pair;
-
-    let mut recvrs = rx_v.lock().unwrap();
-    while *recvrs != 0 {
-      recvrs = rx_cv.wait(recvrs).unwrap();
-    }
-    *recvrs = self.state.receiver_count.load(Ordering::Acquire);
-    drop(recvrs);
-
-    *tx_v.lock().unwrap() = v;
-    tx_cv.notify_all();
-  }
-
-  /// # Transceivers
-  ///
-  /// Transceivers are useful when you need to both receive and send in the same thread.
-  ///
-  /// # Example
-  ///
-  /// ```rust
-  ///  let (tx, rx) = channels::broadcast(Event::Start);
-  ///
-  ///  let rx_handles: [JoinHandle<()>; 3] = std::array::from_fn(|i| {
-  ///    let rx = rx.clone();
-  ///
-  ///    thread::spawn(move || {
-  ///      let mut v = rx.lock();
-  ///
-  ///      loop {
-  ///        v = rx.recv(v);
-  ///        match *v {
-  ///          Event::CmdFinished => println!("[RX][recvr{i:02}]: Command finished {:?}", *v),
-  ///          Event::Goodbye => break,
-  ///          _ => println!("[RX][recvr{i:02}]: Received {:?}", *v),
-  ///        }
-  ///      }
-  ///    })
-  ///  });
-  ///
-  ///  let runner = {
-  ///    let tx = tx.transceiver();
-  ///
-  ///    thread::spawn(move || {
-  ///      let mut event = tx.lock();
-  ///
-  ///      loop {
-  ///        event = tx.recv(event);
-  ///
-  ///        match *event {
-  ///          Event::FileChanged => event = tx.send(event, Event::CmdFinished),
-  ///          Event::Goodbye => break,
-  ///          _ => println!("[RX][runner ]: Received {:?}", *event),
-  ///        }
-  ///      }
-  ///    })
-  ///  };
-  ///
-  ///  let watcher = {
-  ///    let tx = tx.clone();
-  ///
-  ///    thread::spawn(move || {
-  ///      for _ in 0..5 {
-  ///        // Since we're sending an event on every cpu cycle we need to give time for the receivers to start listening again.
-  ///        thread::sleep(Duration::from_millis(10));
-  ///        tx.send(Event::FileChanged);
-  ///      }
-  ///    })
-  ///  };
-  ///
-  ///  watcher.join().unwrap();
-  ///
-  ///  thread::sleep(Duration::from_millis(10));
-  ///  tx.send(Event::Goodbye);
-  ///
-  ///  for rxh in rx_handles {
-  ///    rxh.join().unwrap();
-  ///  }
-  ///
-  ///  runner.join().unwrap();
-  /// ```
-  pub fn transceiver(&self) -> Transceiver<T> {
-    Transceiver {
-      rx: Receiver { state: self.state.clone() },
-      tx: self.clone(),
-    }
-  }
-}
-
-#[derive(Debug, Default)]
-pub struct Transceiver<T> {
-  rx: Receiver<T>,
-  tx: Sender<T>,
-}
-
-impl<T> Transceiver<T> {
-  pub fn lock(&self) -> MutexGuard<T> {
-    self.rx.lock()
-  }
-
-  pub fn recv<'a>(&'a self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-    self.rx.recv(guard)
-  }
-
-  pub fn send<'a>(&'a self, guard: MutexGuard<'a, T>, v: T) -> MutexGuard<'a, T> {
-    drop(guard);
-    self.tx.send(v);
-    self.lock()
+    Self(value.state.clone())
   }
 }

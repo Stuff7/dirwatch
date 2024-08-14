@@ -8,6 +8,9 @@ use std::{
 pub enum Error {
   EmptyRequest,
   Io(io::Error),
+  InotifyInit(io::Error),
+  InotifyWatch(io::Error),
+  InotifyRead(io::Error),
   Utf8(Utf8Error),
   Nul(NulError),
 }
@@ -35,6 +38,9 @@ impl Display for Error {
     match self {
       Self::EmptyRequest => write!(f, "Empty HTTP Request"),
       Self::Io(err) => write!(f, "{err}"),
+      Self::InotifyInit(err) => write!(f, "Failed to initialize inotify: {err}"),
+      Self::InotifyWatch(err) => write!(f, "Failed to add inotify watch: {err}"),
+      Self::InotifyRead(err) => write!(f, "Failed to read inotify event: {err}"),
       Self::Utf8(err) => write!(f, "{err}"),
       Self::Nul(err) => write!(f, "{err}"),
     }

@@ -36,23 +36,30 @@ impl HttpRequest {
   }
 }
 
-impl TryFrom<&mut TcpStream> for HttpRequest {
-  type Error = Error;
-  fn try_from(stream: &mut TcpStream) -> Result<Self, Self::Error> {
-    let peer_addr = stream.peer_addr().unwrap_or_else(|_| "Unknown".parse().unwrap());
-    let buffer = read_request_headers(stream)?;
-    let request = str::from_utf8(&buffer)?;
+impl HttpRequest {
+  pub fn from_ip(peer_addr: SocketAddr) -> Self {
+    Self {
+      path: "".into(),
+      peer_addr,
+      method: HttpMethod::Unknown,
+      headers: HttpHeaders(HashMap::new()),
+    }
+  }
+
+  /// Returns whether the request was changed or not.
+  pub fn read_from_buffer(&mut self, buffer: &[u8]) -> Result<bool, Error> {
+    let request = str::from_utf8(buffer)?;
 
     let mut lines = request.lines();
-    let mut method = lines.next().ok_or(Error::EmptyRequest)?.split_whitespace();
+    let Some(mut method) = lines.next().map(|ln| ln.split_whitespace())
+    else {
+      return Ok(false);
+    };
     let (method, path) = (method.next().unwrap_or_default(), method.next().unwrap_or("???"));
 
-    let mut request = Self {
-      method: method.into(),
-      path: path.into(),
-      peer_addr,
-      headers: HttpHeaders(HashMap::new()),
-    };
+    self.method = method.into();
+    self.path = path.into();
+    self.headers.clear();
 
     for line in lines {
       let Some((k, v)) = line.split_once(':')
@@ -60,14 +67,14 @@ impl TryFrom<&mut TcpStream> for HttpRequest {
         break;
       };
 
-      request.headers.set(k.to_ascii_lowercase(), v[1..].to_string());
+      self.headers.set(k.to_ascii_lowercase(), v[1..].to_string());
     }
 
-    Ok(request)
+    Ok(true)
   }
 }
 
-fn read_request_headers(stream: &mut TcpStream) -> Result<Vec<u8>, Error> {
+pub fn read_request_headers(stream: &mut TcpStream) -> Result<Vec<u8>, Error> {
   let mut buffer = Vec::new();
   let mut chunk = [0; 512];
 
