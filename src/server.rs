@@ -1,4 +1,4 @@
-use crate::channels::{self, Receiver, Sender};
+use crate::channels::{Receiver, RingBuffer, Sender};
 use crate::cli::Cmd;
 use crate::http::{read_request_headers, HttpMethod};
 use crate::{
@@ -173,7 +173,7 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
     cli.dir_serve,
   );
 
-  let (tx, rx) = channels::RingBuffer::channel::<32>(Event::Start);
+  let (tx, rx) = RingBuffer::channel::<32>(Event::Start);
 
   let dirwatcher = {
     let dir_watch = cli.dir_watch.clone();
