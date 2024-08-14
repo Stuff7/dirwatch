@@ -1,14 +1,14 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{array, thread};
 
 #[derive(Debug)]
 struct Slot<T> {
   version: AtomicUsize,
-  message: RefCell<T>,
+  message: RwLock<T>,
 }
 
 unsafe impl<T> Sync for Slot<T> {}
@@ -35,7 +35,7 @@ impl<T: Copy> RingBuffer<T> {
     Self {
       buffer: Arc::new(array::from_fn::<_, BUF_SIZE, _>(|_| Slot {
         version: AtomicUsize::new(0),
-        message: RefCell::new(value),
+        message: RwLock::new(value),
       })),
       write_index: Arc::new(AtomicUsize::new(0)),
       version: Arc::new(AtomicUsize::new(1)),
@@ -56,7 +56,7 @@ impl<T: Copy> RingBuffer<T> {
     let version = self.version.fetch_add(1, Ordering::AcqRel);
 
     let slot = &self.buffer[index];
-    slot.message.replace(new_message);
+    *slot.message.write().unwrap() = new_message;
     slot.version.store(version, Ordering::Release);
   }
 }
@@ -91,7 +91,7 @@ impl<T: Copy + std::fmt::Debug> Receiver<T> {
     for slot in self.state.buffer.iter() {
       if slot.version.load(Ordering::Acquire) == current_version {
         self.last_version.replace(current_version);
-        return Some(*slot.message.borrow());
+        return Some(*slot.message.read().unwrap());
       }
     }
 
@@ -104,7 +104,7 @@ impl<T: Copy + std::fmt::Debug> Receiver<T> {
 
     if let Some(slot) = next_closest {
       self.last_version.replace(slot.version.load(Ordering::Acquire));
-      return Some(*slot.message.borrow());
+      return Some(*slot.message.read().unwrap());
     }
 
     None

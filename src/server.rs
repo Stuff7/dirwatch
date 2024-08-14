@@ -118,7 +118,6 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: Receiver<Event>) -> 
         }
         Event::StreamClosed(ip) if ip == stream_ip => break,
         Event::Quit => {
-          println!("[\x1b[93m{}\x1b[0m] \x1b[36mQUIT\x1b[0m", stream_ip);
           stream.shutdown(Shutdown::Write)?;
           break;
         }
