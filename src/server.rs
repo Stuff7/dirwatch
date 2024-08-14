@@ -219,13 +219,13 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
     })
   };
 
+  let mut stream_peek = [0; 6];
   thread::scope(|s| -> Result<(), Error> {
     for stream in listener.incoming() {
       match stream {
         Ok(stream) => {
-          let mut buf = [0; 6];
-          stream.peek(&mut buf)?;
-          if buf == QUIT_MSG {
+          stream.peek(&mut stream_peek)?;
+          if stream_peek == QUIT_MSG {
             break;
           }
 
