@@ -2,7 +2,6 @@
 {
   const eventSource = new EventSource("/sse");
   eventSource.onmessage = function(event) {
-    // document.getElementById("events").innerHTML += `<div class="event">${event.data}</div>`
     location.reload();
   };
   eventSource.onerror = function(event) {
