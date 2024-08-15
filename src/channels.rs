@@ -83,7 +83,7 @@ impl<T> From<&Sender<T>> for Receiver<T> {
   }
 }
 
-impl<T: Copy + std::fmt::Debug> Receiver<T> {
+impl<T: Copy> Receiver<T> {
   pub fn recv_some(&self) -> Option<T> {
     let current_version = self.last_version.get() + 1;
     for slot in self.state.buffer.iter() {
