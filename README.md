@@ -1,4 +1,4 @@
-# HMR
+### DIRWATCH
 
 The simplest hot module reloading there is:
 
@@ -6,7 +6,7 @@ The simplest hot module reloading there is:
 2. On detecting a change, run the provided command.
 3. Finally, it triggers a page refresh on the client to display the latest changes.
 
-# Usage
+### Usage
 
 ```shell
 dirwatch -watch <dir_to_watch> -serve <dir_to_serve> -run '<command to run>'
