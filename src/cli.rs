@@ -10,8 +10,9 @@ pub struct Cli {
 }
 
 impl Cli {
+  pub const USAGE: &str = "Usage: dirwatch -watch <dir> -serve <dir> -run <cmd> -port <port>";
+
   pub fn parse() -> Result<Self, Error> {
-    // Usage dirwatch -watch <dir> -serve <dir> -run <cmd> -port <port>
     Ok(Self {
       dir_watch: find_arg("-watch").unwrap_or_else(|| ".".to_string()).into(),
       dir_serve: find_arg("-serve").unwrap_or_else(|| ".".to_string()).into(),
@@ -19,6 +20,10 @@ impl Cli {
       cmd: find_arg("-run").unwrap_or_else(|| "".to_string()),
     })
   }
+}
+
+pub fn find_flag(name: &str) -> bool {
+  env::args().any(|a| a == name)
 }
 
 fn find_arg<F: FromStr>(arg_name: &str) -> Option<F> {

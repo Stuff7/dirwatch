@@ -10,6 +10,11 @@ use error::Error;
 
 #[cfg(unix)]
 fn main() -> Result<(), Error> {
+  if cli::find_flag("-h") {
+    println!("{}", Cli::USAGE);
+    return Ok(());
+  }
+
   let args = Cli::parse()?;
   server::run_server(&args)?;
   println!("Main exit");
