@@ -70,19 +70,12 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: Receiver<Event>) -> 
 
       match event {
         Event::CmdFinished if is_sse => {
-          println!("[\x1b[93m{}\x1b[0m] \x1b[32mFile Changed\x1b[0m", stream_ip);
+          println!("[\x1b[93m  {}\x1b[0m] \x1b[32mFile Changed\x1b[0m", stream_ip);
           send_sse_message(&mut stream)?;
         }
         Event::HttpRequest(ip) if ip == stream_ip => {
           let req = req.lock().unwrap();
-          println!(
-            "[\x1b[93m{}\x1b[0m] \x1b[34m{:?}\x1b[0m \x1b[33m{}\x1b[0m - \x1b[36m{}\x1b[0m | {}",
-            req.peer_addr,
-            req.method,
-            req.path,
-            req.headers.get("user-agent").unwrap_or(&"No user agent".into()),
-            req.headers.get("connection").unwrap_or(&"".into()),
-          );
+          println!("{}", req);
 
           let mut res = HttpResponse::new();
 
@@ -103,7 +96,7 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: Receiver<Event>) -> 
                     .set_header("cache-control", "no-cache")
                     .set_header("connection", "keep-alive");
 
-                  println!("[\x1b[93m{}\x1b[0m] \x1b[36mSSE Connected\x1b[0m", stream_ip);
+                  println!("[\x1b[93m  {}\x1b[0m] \x1b[36mSSE Connected\x1b[0m", stream_ip);
                   is_sse = true;
                 }
                 _ => res.set_file(dir_serve.join(&req.path[1..]), &req)?,
@@ -129,10 +122,10 @@ fn handle_http(mut stream: TcpStream, dir_serve: &Path, rx: Receiver<Event>) -> 
   })?;
 
   if is_sse {
-    println!("[\x1b[93m{}\x1b[0m] \x1b[33mSSE Disconnected\x1b[0m", stream_ip);
+    println!("[\x1b[93m  {}\x1b[0m] \x1b[33mSSE Disconnected\x1b[0m", stream_ip);
   }
   else {
-    println!("[\x1b[93m{}\x1b[0m] \x1b[33mHttp Disconnected\x1b[0m", stream_ip);
+    println!("[\x1b[93m  {}\x1b[0m] \x1b[33mHttp Disconnected\x1b[0m", stream_ip);
   }
 
   Ok(())
@@ -159,11 +152,10 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
 
   println!(
     "\x1b[1m\x1b[38;5;159mhttp://localhost:{}\n\
-     \x1b[38;5;158mhttp://{}:{}\n\
-     \n\
-     Watching \x1b[93m{:?}\x1b[0m\n\
-     Serving  \x1b[93m{:?}\x1b[0m\n\
-     \n\x1b[38;5;225mPress Q\x1b[0m to exit\n\
+     \x1b[38;5;158mhttp://{}:{}\n\n\
+     Watching \x1b[93m{:?}\x1b[37m\n\
+     Serving  \x1b[93m{:?}\x1b[38;5;225m\n\n\
+     Press Q\x1b[0m to exit\n\
     ",
     cli.port,
     listener.local_addr()?.ip(),
@@ -234,7 +226,7 @@ pub fn run_server(cli: &Cli) -> Result<(), Error> {
 
           s.spawn(move || {
             if let Err(e) = handle_http(stream, &dir_serve, rx) {
-              eprintln!("[{}] Error handling request: {}", peer_addr, e);
+              eprintln!("[  {}] Error handling request: {}", peer_addr, e);
             }
           });
         }

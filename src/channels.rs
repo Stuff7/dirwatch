@@ -11,8 +11,6 @@ struct Slot<T> {
   message: RwLock<T>,
 }
 
-unsafe impl<T> Sync for Slot<T> {}
-
 #[derive(Debug)]
 pub struct RingBuffer<T> {
   buffer: Arc<[Slot<T>]>,

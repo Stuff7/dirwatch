@@ -3,6 +3,7 @@ use crate::error::Error;
 use crate::server::Event;
 use libc::{inotify_add_watch, inotify_event, inotify_init1, read, EAGAIN, EWOULDBLOCK, IN_CLOSE_WRITE};
 use std::ffi::{CStr, CString};
+use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,12 +21,6 @@ pub fn watch_dir(path: &Path, mask: u32, tx: Sender<Event>) -> Result<(), Error>
     return Err(Error::InotifyInit(io::Error::last_os_error()));
   }
 
-  let path_c = CString::new(path.to_str().unwrap().as_bytes())?;
-  let wd = unsafe { inotify_add_watch(fd, path_c.as_ptr(), mask) };
-  if wd < 0 {
-    return Err(Error::InotifyWatch(io::Error::last_os_error()));
-  }
-
   let stop = Arc::new(AtomicBool::new(false));
   let server_events = {
     let rx = Receiver::from(&tx);
@@ -39,6 +34,27 @@ pub fn watch_dir(path: &Path, mask: u32, tx: Sender<Event>) -> Result<(), Error>
       }
     })
   };
+
+  fn add_watch_recursive(fd: i32, path: &Path, mut mask: u32) -> Result<(), Error> {
+    mask |= IN_CREATE;
+    let path_c = CString::new(path.to_str().unwrap().as_bytes())?;
+    let wd = unsafe { inotify_add_watch(fd, path_c.as_ptr(), mask) };
+    if wd < 0 {
+      return Err(Error::InotifyWatch(io::Error::last_os_error()));
+    }
+
+    for entry in fs::read_dir(path)? {
+      let entry = entry?;
+      let path = entry.path();
+      if path.is_dir() {
+        add_watch_recursive(fd, &path, mask)?;
+      }
+    }
+
+    Ok(())
+  }
+
+  add_watch_recursive(fd, path, mask)?;
 
   let mut buffer = [0; BUF_LEN];
 
@@ -64,7 +80,20 @@ pub fn watch_dir(path: &Path, mask: u32, tx: Sender<Event>) -> Result<(), Error>
     while i < length as usize {
       let event = unsafe { &*(buffer.as_ptr().add(i) as *const inotify_event) };
       log_event(event, &buffer);
-      tx.send(Event::FileChange);
+
+      if event.mask & IN_CREATE != 0 {
+        let event_name = extract_event_name(event, &buffer);
+        let new_path = path.join(event_name);
+
+        if new_path.is_dir() {
+          add_watch_recursive(fd, &new_path, mask)?;
+        }
+      }
+
+      if event.mask & mask != 0 {
+        tx.send(Event::FileChange);
+      }
+
       i += EVENT_SIZE + event.len as usize;
     }
   }
@@ -77,7 +106,6 @@ pub fn watch_dir(path: &Path, mask: u32, tx: Sender<Event>) -> Result<(), Error>
 fn log_event(event: &inotify_event, buffer: &[u8]) {
   let mask = event.mask;
   let wd = event.wd;
-  let name_len = event.len as usize;
 
   let mut mask_str = String::new();
   if mask & IN_MODIFY != 0 {
@@ -99,13 +127,18 @@ fn log_event(event: &inotify_event, buffer: &[u8]) {
     mask_str.push_str("IN_IGNORED ");
   }
 
-  let name = if name_len > 0 {
+  let name = extract_event_name(event, buffer);
+
+  println!("\x1b[38;5;123mFile Change:\x1b[0m WD: {}, Mask: {}, Name: {}", wd, mask_str.trim(), name);
+}
+
+fn extract_event_name<'a>(event: &inotify_event, buffer: &'a [u8]) -> &'a str {
+  let name_len = event.len as usize;
+  if name_len > 0 {
     let name_cstr = unsafe { CStr::from_ptr(buffer.as_ptr().add(EVENT_SIZE) as *const _) };
     name_cstr.to_str().unwrap_or("Invalid UTF-8")
   }
   else {
     ""
-  };
-
-  println!("\x1b[38;5;123mFile Change:\x1b[0m WD: {}, Mask: {}, Name: {}", wd, mask_str.trim(), name);
+  }
 }

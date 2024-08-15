@@ -18,6 +18,19 @@ pub struct HttpRequest {
   pub headers: HttpHeaders,
 }
 
+impl Display for HttpRequest {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "[\x1b[93m  {}\x1b[0m] \x1b[33m󰋻 {:?} {}\x1b[0m | \x1b[36m󰮤 {}\x1b[0m",
+      self.peer_addr,
+      self.method,
+      self.path,
+      self.headers.get("user-agent").unwrap_or(&"No user agent".into()),
+    )
+  }
+}
+
 impl HttpRequest {
   pub fn get_range(&self) -> Option<Range<usize>> {
     self.headers.get("range").and_then(|r| {
@@ -34,9 +47,7 @@ impl HttpRequest {
       Some(s..e)
     })
   }
-}
 
-impl HttpRequest {
   pub fn from_ip(peer_addr: SocketAddr) -> Self {
     Self {
       path: "".into(),
