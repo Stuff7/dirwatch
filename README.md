@@ -9,7 +9,7 @@ The simplest hot module reloading there is:
 ### Usage
 
 ```shell
-dirwatch -watch <dir_to_watch> -serve <dir_to_serve> -run '<command to run>'
+dirwatch -watch <dir to watch> -serve <dir to serve> -run '<command to run> -port <port to listen to>'
 ```
 
 ### Example
