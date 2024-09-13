@@ -6,7 +6,6 @@ use std::{
 };
 
 pub enum Error {
-  EmptyRequest,
   Io(io::Error),
   InotifyInit(io::Error),
   InotifyWatch(io::Error),
@@ -37,7 +36,6 @@ impl From<NulError> for Error {
 impl Display for Error {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Self::EmptyRequest => write!(f, "Empty HTTP Request"),
       Self::Io(err) => write!(f, "{err}"),
       Self::InotifyInit(err) => write!(f, "Failed to initialize inotify: {err}"),
       Self::InotifyWatch(err) => write!(f, "Failed to add inotify watch: {err}"),
