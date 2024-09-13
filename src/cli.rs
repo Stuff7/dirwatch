@@ -1,6 +1,6 @@
 use crate::error::Error;
 use std::process::{Command, ExitStatus, Stdio};
-use std::{env, path::PathBuf, str::FromStr};
+use std::{env, io::Write, path::PathBuf, str::FromStr};
 
 pub struct Cli {
   pub dir_watch: PathBuf,
@@ -45,13 +45,17 @@ impl Cmd {
     };
 
     let mut cmd = Command::new(exe);
-    cmd.args(cmd_iter);
+    cmd.args(cmd_iter).stdin(Stdio::piped());
     Self(Some(cmd))
   }
 
-  pub fn run_wait(&mut self) -> Result<ExitStatus, Error> {
+  pub fn run_wait(&mut self, data: &[u8]) -> Result<ExitStatus, Error> {
     if let Some(ref mut cmd) = self.0 {
-      return Ok(cmd.stdout(Stdio::null()).status()?);
+      let mut p = cmd.stdout(Stdio::null()).spawn()?;
+      if let Some(stdin) = p.stdin.as_mut() {
+        stdin.write_all(data)?;
+      }
+      return Ok(p.wait()?);
     }
 
     Ok(ExitStatus::default())

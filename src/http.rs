@@ -68,6 +68,11 @@ impl HttpRequest {
     };
     let (method, path) = (method.next().unwrap_or_default(), method.next().unwrap_or("???"));
 
+    let path = match path.bytes().position(|b| b == b'?' || b == b'#') {
+      Some(pos) => &path[..pos],
+      None => path,
+    };
+
     self.method = method.into();
     self.path = path.into();
     self.headers.clear();

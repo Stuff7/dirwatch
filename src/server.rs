@@ -1,5 +1,6 @@
 use crate::channels::{Receiver, RingBuffer, Sender};
 use crate::cli::Cmd;
+use crate::dirwatch::PascalString;
 use crate::http::{read_request_headers, HttpMethod};
 use crate::{
   dirwatch,
@@ -16,7 +17,7 @@ use std::thread;
 #[derive(Debug, Clone, Copy)]
 pub enum Event {
   Start,
-  FileChange,
+  FileChange(PascalString),
   CmdFinished,
   HttpRequest(SocketAddr),
   StreamClosed(SocketAddr),
@@ -135,8 +136,8 @@ fn run_cmd(mut cmd: Cmd, tx: Receiver<Event>) -> Result<(), Error> {
   loop {
     let event = tx.recv();
     match event {
-      Event::FileChange => {
-        cmd.run_wait()?;
+      Event::FileChange(dir) => {
+        cmd.run_wait(dir.as_bytes())?;
         tx.send(Event::CmdFinished);
       }
       Event::Quit => break,

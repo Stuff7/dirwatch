@@ -12,6 +12,7 @@ pub enum Error {
   InotifyWatch(io::Error),
   InotifyRead(io::Error),
   Utf8(Utf8Error),
+  NonUtf8,
   Nul(NulError),
 }
 
@@ -42,6 +43,7 @@ impl Display for Error {
       Self::InotifyWatch(err) => write!(f, "Failed to add inotify watch: {err}"),
       Self::InotifyRead(err) => write!(f, "Failed to read inotify event: {err}"),
       Self::Utf8(err) => write!(f, "{err}"),
+      Self::NonUtf8 => write!(f, "Only utf8 file names are supported"),
       Self::Nul(err) => write!(f, "{err}"),
     }
   }
