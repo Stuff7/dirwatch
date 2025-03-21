@@ -240,6 +240,7 @@ fn get_mime_type(path: &std::path::Path) -> &'static str {
     "wav" => "audio/wav",
     "ogg" => "audio/ogg",
     "webp" => "image/webp",
+    "wasm" => "application/wasm",
     _ => "application/octet-stream",
   }
 }
